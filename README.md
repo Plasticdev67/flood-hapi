@@ -43,7 +43,7 @@ If you prefer to set up manually:
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/flood-hapi.git
+git clone https://github.com/Plasticdev67/flood-hapi.git
 cd flood-hapi
 
 # Create virtual environment
