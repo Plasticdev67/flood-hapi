@@ -1,6 +1,8 @@
 # Flood Hapi
 
 **Egyptian Flood Intelligence Dashboard**
+<img width="1896" height="891" alt="image" src="https://github.com/user-attachments/assets/479d7f6d-2184-45af-935c-2763f1262778" />
+<img width="1888" height="651" alt="image" src="https://github.com/user-attachments/assets/742fae37-386a-426f-a50c-1f3600418962" />
 
 A free, open-source tool that downloads Environment Agency surface water flood risk data for any UK postcode and exports it as shapefiles.
 
