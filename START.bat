@@ -17,37 +17,41 @@ REM ── Find Python 3.13 specifically, then fall back ──
 echo  [1/5] Looking for Python...
 
 REM Prefer py launcher targeting 3.13 (avoids 3.14 which lacks wheels)
-where py >nul 2>&1 && py -3.13 --version >nul 2>&1 && set "PYTHON=py -3.13" && goto :python_ok
+where py >nul 2>&1 && py -3.13 --version >nul 2>&1 && set "PYTHON=py -3.13" && goto :python_verified
 
 REM Try explicit 3.13 paths
-if exist "!LOCALAPPDATA!\Programs\Python\Python313\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python313\python.exe" && goto :python_ok
-if exist "!PROGRAMFILES!\Python313\python.exe" set "PYTHON=!PROGRAMFILES!\Python313\python.exe" && goto :python_ok
+if exist "!LOCALAPPDATA!\Programs\Python\Python313\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python313\python.exe" && goto :python_verified
+if exist "!PROGRAMFILES!\Python313\python.exe" set "PYTHON=!PROGRAMFILES!\Python313\python.exe" && goto :python_verified
 
 REM Try 3.12 and 3.11 (also have wheels)
-where py >nul 2>&1 && py -3.12 --version >nul 2>&1 && set "PYTHON=py -3.12" && goto :python_ok
-where py >nul 2>&1 && py -3.11 --version >nul 2>&1 && set "PYTHON=py -3.11" && goto :python_ok
-if exist "!LOCALAPPDATA!\Programs\Python\Python312\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python312\python.exe" && goto :python_ok
-if exist "!LOCALAPPDATA!\Programs\Python\Python311\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python311\python.exe" && goto :python_ok
-if exist "!PROGRAMFILES!\Python312\python.exe" set "PYTHON=!PROGRAMFILES!\Python312\python.exe" && goto :python_ok
-if exist "!PROGRAMFILES!\Python311\python.exe" set "PYTHON=!PROGRAMFILES!\Python311\python.exe" && goto :python_ok
+where py >nul 2>&1 && py -3.12 --version >nul 2>&1 && set "PYTHON=py -3.12" && goto :python_verified
+where py >nul 2>&1 && py -3.11 --version >nul 2>&1 && set "PYTHON=py -3.11" && goto :python_verified
+if exist "!LOCALAPPDATA!\Programs\Python\Python312\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python312\python.exe" && goto :python_verified
+if exist "!LOCALAPPDATA!\Programs\Python\Python311\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python311\python.exe" && goto :python_verified
+if exist "!PROGRAMFILES!\Python312\python.exe" set "PYTHON=!PROGRAMFILES!\Python312\python.exe" && goto :python_verified
+if exist "!PROGRAMFILES!\Python311\python.exe" set "PYTHON=!PROGRAMFILES!\Python311\python.exe" && goto :python_verified
 
-REM Last resort: whatever "python" is on PATH
-where python >nul 2>&1 && set "PYTHON=python" && goto :python_ok
+REM Last resort: whatever "python" is on PATH (needs version check)
+where python >nul 2>&1 && set "PYTHON=python" && goto :python_check_version
 
 goto :no_python
 
-:python_ok
+:python_check_version
+echo        Found: !PYTHON!
+REM Only check version for generic "python" — might be 3.14+
+python -c "import sys; exit(0 if sys.version_info < (3,14) else 1)" 2>nul
+if errorlevel 1 goto :python_too_new
+goto :venv_check
+
+:python_verified
 echo        Found: !PYTHON!
 
-REM ── Check Python version isn't too new ──
-"!PYTHON!" -c "import sys; exit(0 if sys.version_info < (3,14) else 1)" 2>nul
-if errorlevel 1 goto :python_too_new
-
+:venv_check
 REM ── Create venv if needed ──
 if exist "venv\Scripts\python.exe" goto :venv_ok
 echo.
 echo  [2/5] Creating virtual environment (first run only)...
-"!PYTHON!" -m venv venv
+!PYTHON! -m venv venv
 if exist "venv\Scripts\python.exe" goto :venv_ok
 echo  [!] Failed to create virtual environment.
 goto :fail
@@ -143,9 +147,9 @@ echo  [+] Python 3.13 installed.
 echo      Deleting old venv to use new Python...
 rmdir /s /q venv 2>nul
 REM Re-find python
-where py >nul 2>&1 && py -3.13 --version >nul 2>&1 && set "PYTHON=py -3.13" && goto :python_ok
-if exist "!LOCALAPPDATA!\Programs\Python\Python313\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python313\python.exe" && goto :python_ok
-where python >nul 2>&1 && set "PYTHON=python" && goto :python_ok
+where py >nul 2>&1 && py -3.13 --version >nul 2>&1 && set "PYTHON=py -3.13" && goto :python_verified
+if exist "!LOCALAPPDATA!\Programs\Python\Python313\python.exe" set "PYTHON=!LOCALAPPDATA!\Programs\Python\Python313\python.exe" && goto :python_verified
+where python >nul 2>&1 && set "PYTHON=python" && goto :python_check_version
 echo  [!] Python installed but not found yet.
 echo      Close this window and run START.bat again.
 goto :fail
