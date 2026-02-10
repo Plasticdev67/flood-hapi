@@ -32,7 +32,9 @@ import geopandas as gpd
 from shapely.geometry import Point, Polygon, MultiPolygon, GeometryCollection
 from shapely.validation import make_valid
 from shapely.prepared import prep
+from shapely.ops import unary_union
 from pyproj import Transformer
+import pandas as pd
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -172,7 +174,7 @@ def geocode_postcode(postcode: str) -> dict:
     }
 
 
-def create_buffer_bbox(easting: float, northing: float, radius: float = DEFAULT_RADIUS):
+def create_buffer_bbox(easting: float, northing: float, radius: float = DEFAULT_RADIUS) -> tuple[tuple, tuple]:
     """Create a bounding box in BNG and WGS84 around a point."""
     bbox_bng = (
         easting - radius,
@@ -186,7 +188,7 @@ def create_buffer_bbox(easting: float, northing: float, radius: float = DEFAULT_
     return bbox_bng, bbox_wgs84
 
 
-def create_buffer_polygon(easting: float, northing: float, radius: float = DEFAULT_RADIUS):
+def create_buffer_polygon(easting: float, northing: float, radius: float = DEFAULT_RADIUS) -> Polygon:
     """Create a circular buffer polygon in BNG."""
     return Point(easting, northing).buffer(radius)
 
@@ -213,7 +215,6 @@ def download_ea_layer(layer_name: str, bbox_wgs84: tuple, max_retries: int = 3) 
     }
 
     url = f"{EA_QUERY_API}?layer={layer_id}"
-    last_error = None
     for attempt in range(1, max_retries + 1):
         try:
             resp = _http.post(
@@ -228,7 +229,6 @@ def download_ea_layer(layer_name: str, bbox_wgs84: tuple, max_retries: int = 3) 
             resp.raise_for_status()
             break
         except Exception as e:
-            last_error = e
             if attempt < max_retries:
                 wait = attempt * 3
                 log.warning(f"  -> {layer_name} attempt {attempt} failed: {e}. Retrying in {wait}s...")
@@ -326,7 +326,6 @@ def clip_to_buffer(gdf: gpd.GeoDataFrame, buffer_polygon, prepared_buffer=None) 
                     return None
                 if len(polys) == 1:
                     return polys[0]
-                from shapely.ops import unary_union
                 return unary_union(polys)
             return None
 
@@ -334,12 +333,11 @@ def clip_to_buffer(gdf: gpd.GeoDataFrame, buffer_polygon, prepared_buffer=None) 
         clipped_edges["geometry"] = clipped_edges["geometry"].apply(extract_polygons)
         clipped_edges = clipped_edges.dropna(subset=["geometry"])
 
-    import pandas as pd
     result = gpd.GeoDataFrame(pd.concat([fully_inside, clipped_edges], ignore_index=True), crs=gdf.crs)
     return result
 
 
-def save_as_shapefile(gdf: gpd.GeoDataFrame, output_path: Path, layer_name: str):
+def save_as_shapefile(gdf: gpd.GeoDataFrame, output_path: Path, layer_name: str) -> bool:
     """Save a GeoDataFrame as a shapefile."""
     if gdf.empty:
         log.info(f"  -> Skipping empty layer: {layer_name}")
@@ -349,7 +347,7 @@ def save_as_shapefile(gdf: gpd.GeoDataFrame, output_path: Path, layer_name: str)
     return True
 
 
-def create_zip(source_dir: Path, zip_path: Path):
+def create_zip(source_dir: Path, zip_path: Path) -> None:
     """Create a zip file from all files in the source directory."""
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for file in source_dir.rglob("*"):
@@ -357,8 +355,9 @@ def create_zip(source_dir: Path, zip_path: Path):
                 zf.write(file, file.relative_to(source_dir))
 
 
-def _process_single_layer(layer_key, layer_config, raw_gdf, buffer_poly, prepared_buffer, shp_dir):
-    """Process a single output layer: filter, clip, save. Used by thread pool."""
+def _process_single_layer(layer_key: str, layer_config: dict, raw_gdf: gpd.GeoDataFrame,
+                          buffer_poly, prepared_buffer, shp_dir: Path) -> tuple[str, dict]:
+    """Process a single output layer: filter, clip, save."""
     try:
         if raw_gdf.empty:
             return layer_key, {
@@ -407,12 +406,13 @@ def _process_single_layer(layer_key, layer_config, raw_gdf, buffer_poly, prepare
 def process_postcode(postcode: str, radius: float = DEFAULT_RADIUS) -> dict:
     """
     Main processing function:
-    1. Geocode postcode
-    2. Create buffer
-    3. Download all RoFSW layers from EA in parallel
-    4. Clip the shared rofsw layer once, then split by risk band
-    5. Clip + save depth layers in parallel
-    6. Create zip for download
+    1. Geocode postcode to BNG coordinates
+    2. Create circular buffer and bounding box
+    3. Download all 6 RoFSW layers from EA in parallel
+    4. Clip rofsw once, then split by risk band (avoids 3x redundant clips)
+    5. Clip + save depth layers sequentially (avoids GDAL threading crashes)
+    6. Save search buffer polygon as shapefile
+    7. Package everything into a zip with metadata
     """
     t_start = time.perf_counter()
 
@@ -527,12 +527,13 @@ def process_postcode(postcode: str, radius: float = DEFAULT_RADIUS) -> dict:
         [{"postcode": location["postcode"], "radius_m": radius, "geometry": buffer_poly}],
         crs=CRS_BNG,
     )
-    save_as_shapefile(buffer_gdf, shp_dir, "search_buffer_500m")
+    buffer_filename = f"search_buffer_{int(radius)}m"
+    save_as_shapefile(buffer_gdf, shp_dir, buffer_filename)
     results["layers"]["search_buffer"] = {
         "features": 1,
         "status": "ok",
-        "description": f"{radius}m buffer around {location['postcode']}",
-        "filename": "search_buffer_500m.shp",
+        "description": f"{int(radius)}m buffer around {location['postcode']}",
+        "filename": f"{buffer_filename}.shp",
     }
 
     # Step 8: Save metadata
@@ -565,7 +566,7 @@ def process_postcode(postcode: str, radius: float = DEFAULT_RADIUS) -> dict:
     shutil.rmtree(job_dir, ignore_errors=True)
 
     total_features = sum(
-        l.get("features", 0) for l in results["layers"].values()
+        layer.get("features", 0) for layer in results["layers"].values()
     )
     results["total_features"] = total_features
 
