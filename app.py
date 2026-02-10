@@ -191,10 +191,10 @@ def create_buffer_polygon(easting: float, northing: float, radius: float = DEFAU
     return Point(easting, northing).buffer(radius)
 
 
-def download_ea_layer(layer_name: str, bbox_wgs84: tuple) -> gpd.GeoDataFrame:
+def download_ea_layer(layer_name: str, bbox_wgs84: tuple, max_retries: int = 3) -> gpd.GeoDataFrame:
     """
     Download raw vector data from the Defra DSP geospatial query API.
-    Reads shapefiles directly from the in-memory zip (no temp files on disk).
+    Retries up to max_retries times on failure (EA API can be flaky).
     """
     layer_id = EA_LAYER_IDS[layer_name]
     t0 = time.perf_counter()
@@ -213,16 +213,29 @@ def download_ea_layer(layer_name: str, bbox_wgs84: tuple) -> gpd.GeoDataFrame:
     }
 
     url = f"{EA_QUERY_API}?layer={layer_id}"
-    resp = _http.post(
-        url,
-        headers={
-            "Accept": "application/zipped-shapefile",
-            "Content-Type": "application/geo+json",
-        },
-        json=query_polygon,
-        timeout=180,
-    )
-    resp.raise_for_status()
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = _http.post(
+                url,
+                headers={
+                    "Accept": "application/zipped-shapefile",
+                    "Content-Type": "application/geo+json",
+                },
+                json=query_polygon,
+                timeout=180,
+            )
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries:
+                wait = attempt * 3
+                log.warning(f"  -> {layer_name} attempt {attempt} failed: {e}. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                log.error(f"  -> {layer_name} failed after {max_retries} attempts: {e}")
+                raise
     dl_time = time.perf_counter() - t0
 
     if len(resp.content) < 100:
@@ -493,25 +506,19 @@ def process_postcode(postcode: str, radius: float = DEFAULT_RADIUS) -> dict:
             "filename": f"{filename}.shp" if saved else None,
         }
 
-    # Step 6: Clip + save depth layers in PARALLEL
+    # Step 6: Clip + save depth layers sequentially
+    # (parallel clipping can crash GDAL/GEOS on large datasets)
     depth_layers = {k: v for k, v in ROFSW_LAYERS.items() if k.startswith("depth_")}
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(
-                _process_single_layer,
-                lk, lc,
-                raw_data.get(lc["ea_layer"], gpd.GeoDataFrame()),
-                buffer_poly, prepared_buffer, shp_dir,
-            ): lk
-            for lk, lc in depth_layers.items()
-        }
-        for future in as_completed(futures):
-            lk = futures[future]
-            layer_key, layer_result = future.result()
-            results["layers"][layer_key] = layer_result
-            if layer_result.get("error"):
-                results["errors"].append(f"{layer_key}: {layer_result['error']}")
+    for lk, lc in depth_layers.items():
+        layer_key, layer_result = _process_single_layer(
+            lk, lc,
+            raw_data.get(lc["ea_layer"], gpd.GeoDataFrame()),
+            buffer_poly, prepared_buffer, shp_dir,
+        )
+        results["layers"][layer_key] = layer_result
+        if layer_result.get("error"):
+            results["errors"].append(f"{layer_key}: {layer_result['error']}")
 
     log.info(f"  All layers processed in {time.perf_counter() - t_proc:.1f}s")
 
